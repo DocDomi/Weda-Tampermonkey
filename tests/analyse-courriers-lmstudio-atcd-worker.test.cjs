@@ -25,7 +25,7 @@ test("aligne les versions Tampermonkey et interne", () => {
   const internalVersion = source.match(/const SCRIPT_VERSION = "([^"]+)"/)?.[1];
 
   assert.equal(metadataVersion, internalVersion);
-  assert.equal(metadataVersion, "0.1.64");
+  assert.equal(metadataVersion, "0.1.68");
 });
 
 test("sans URL patient, utilise une identité vérifiée et un onglet dédié", () => {

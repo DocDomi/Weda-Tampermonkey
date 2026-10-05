@@ -40,6 +40,96 @@ test("attend un tableau patient rafraîchi avant de scorer les résultats", () =
   assert.match(body, /previousGrid/);
   assert.match(body, /grid !== previousGrid/);
   assert.match(body, /WEDA_FIND_PATIENT_STALE_RESULT_GUARD_MS/);
+  assert.match(body, /WEDA_FIND_PATIENT_RESULT_COUNT_SELECTOR/);
+  assert.match(body, /explicitZero/);
+});
+
+test("n'utilise pas le champ prénom lorsque WEDA affiche encore l'ancien mode", () => {
+  const body = getFunctionSource(
+    "findWedaFindPatientSearchUiReadyForMode",
+    "isWedaAsyncPostBackActive"
+  );
+  const nameInput = { id: "name" };
+  const select = { value: "Nom", options: [{ value: "Nom" }] };
+  let buttonTitle = "Recherche par prénom et prénoms de naissance";
+  const ready = new Function("select", "nameInput", "getTitle", `
+    const WEDA_FIND_PATIENT_BIRTH_DATE_MODE_VALUE = "Naissance";
+    const findWedaFindPatientModeSelect = () => select;
+    const findWedaFindPatientModeOption = (current, mode) => current.options.find(option => option.value === mode);
+    const findWedaFindPatientSearchButton = () => ({ getAttribute: key => key === "title" ? getTitle() : "" });
+    const normalizeForCompare = value => String(value || "").normalize("NFD").replace(/[\\u0300-\\u036f]/g, "").toLowerCase();
+    const document = { querySelector: selector => selector.endsWith("TextBoxRecherche") ? nameInput : null };
+    const isElementVisible = () => true;
+    ${body}
+    return findWedaFindPatientSearchUiReadyForMode;
+  `)(select, nameInput, () => buttonTitle);
+
+  assert.equal(ready("Nom"), null);
+  buttonTitle = "Recherche par noms, prénoms, nom de naissance";
+  assert.equal(ready("Nom"), nameInput);
+  select.value = "Prenom";
+  assert.equal(ready("Nom"), null);
+});
+
+test("reconnaît rapidement zéro résultat explicite sans tableau patient", async () => {
+  const body = getFunctionSource(
+    "waitForWedaFindPatientSearchSelection",
+    "pruneWedaFindPatientRescueAttemptKeys"
+  );
+  const previousCount = { textContent: "8" };
+  const newCount = { textContent: "0" };
+  let polls = 0;
+  const waitForSelection = new Function("previousCount", "newCount", "onPoll", `
+    const WEDA_FIND_PATIENT_SEARCH_SETTLE_MS = 0;
+    const WEDA_FIND_PATIENT_STALE_RESULT_GUARD_MS = 3500;
+    const WEDA_FIND_PATIENT_RESULT_WAIT_MS = 9000;
+    const WEDA_FIND_PATIENT_GRID_SELECTOR = "grid";
+    const WEDA_FIND_PATIENT_RESULT_COUNT_SELECTOR = "count";
+    const document = { querySelector: selector => selector === "count" ? newCount : null };
+    const normalizeText = value => String(value || "").trim();
+    const isWedaAsyncPostBackActive = () => false;
+    const collectWedaFindPatientGridCandidates = () => [];
+    const resolveWedaFindPatientGridSelection = () => ({ reason: "missing-results", candidateCount: 0, link: null });
+    const waitFor = async predicate => { onPoll(); const result = predicate(); if (!result) throw new Error("attente inutile"); return result; };
+    ${body.replace(/^function/, "async function")}
+    return waitForWedaFindPatientSearchSelection;
+  `)(previousCount, newCount, () => { polls += 1; });
+
+  const result = await waitForSelection({}, {}, null, previousCount, "8");
+  assert.equal(result.reason, "missing-results");
+  assert.equal(polls, 1);
+});
+
+test("n'accepte pas un ancien compteur zéro avant le rafraîchissement WEDA", async () => {
+  const body = getFunctionSource(
+    "waitForWedaFindPatientSearchSelection",
+    "pruneWedaFindPatientRescueAttemptKeys"
+  );
+  const count = { textContent: "0" };
+  const waitForSelection = new Function("count", `
+    let now = 1000;
+    const Date = { now: () => now };
+    const WEDA_FIND_PATIENT_SEARCH_SETTLE_MS = 0;
+    const WEDA_FIND_PATIENT_STALE_RESULT_GUARD_MS = 3500;
+    const WEDA_FIND_PATIENT_RESULT_WAIT_MS = 9000;
+    const WEDA_FIND_PATIENT_GRID_SELECTOR = "grid";
+    const WEDA_FIND_PATIENT_RESULT_COUNT_SELECTOR = "count";
+    const document = { querySelector: selector => selector === "count" ? count : null };
+    const normalizeText = value => String(value || "").trim();
+    const isWedaAsyncPostBackActive = () => false;
+    const collectWedaFindPatientGridCandidates = () => [];
+    const resolveWedaFindPatientGridSelection = () => ({ reason: "missing-results", link: null });
+    const waitFor = async predicate => {
+      if (predicate() !== null) throw new Error("résultat ancien accepté trop tôt");
+      now += 3600;
+      return predicate();
+    };
+    ${body.replace(/^function/, "async function")}
+    return waitForWedaFindPatientSearchSelection;
+  `)(count);
+
+  const result = await waitForSelection({}, {}, null, count, "0");
+  assert.equal(result.reason, "missing-results");
 });
 
 test("reconnaît l'identifiant actuel du lien patient WEDA", () => {

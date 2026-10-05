@@ -14,27 +14,42 @@ function fn(name) {
 }
 function load(names, globals = {}) {
   return vm.runInNewContext(`let cachedLmStudioModelId = 'ancien-modele';\n${['isLmStudioBlockingError', 'createLmStudioServiceError', ...names].map(fn).join('\n')}\n({${names.join(',')}, createLmStudioServiceError, getCache: () => cachedLmStudioModelId})`, {
-    LMSTUDIO_MODEL: '', LMSTUDIO_MODELS_URL: 'http://localhost:1234/v1/models',
+    LMSTUDIO_MODEL: '', LMSTUDIO_LOADED_MODELS_URL: 'http://localhost:1234/api/v1/models',
     LMSTUDIO_REQUEST_TIMEOUT_MS: 300000, appendDebugLog: () => {}, ...globals,
   });
 }
 
 test('courriers: revalide le modèle, refuse une liste vide et récupère après rechargement', async () => {
-  let models = [{ id: 'modele-actif' }];
+  let models = [{ type: 'llm', key: 'modele-actif', loaded_instances: [{ id: 'modele-actif' }] }];
   let calls = 0;
-  const api = load(['getLmStudioModelId'], { gmJsonRequest: async () => { calls++; return { data: models }; } });
+  const api = load(['getLmStudioModelId'], { gmJsonRequest: async () => { calls++; return { models }; } });
   assert.equal(await api.getLmStudioModelId(), 'modele-actif');
   models = [];
-  await assert.rejects(api.getLmStudioModelId(), /aucun modèle disponible/);
+  await assert.rejects(api.getLmStudioModelId(), /aucun modèle de conversation chargé/);
   assert.equal(api.getCache(), '');
-  models = [{ id: 'modele-recharge' }];
+  models = [{ type: 'llm', key: 'modele-recharge', loaded_instances: [{ id: 'modele-recharge' }] }];
   assert.equal(await api.getLmStudioModelId(), 'modele-recharge');
   assert.equal(calls, 3);
 });
 
 test('courriers: ne remplace pas un modèle explicite absent par un autre', async () => {
-  const api = load(['getLmStudioModelId'], { LMSTUDIO_MODEL: 'attendu', gmJsonRequest: async () => ({ data: [{ id: 'autre' }] }) });
+  const api = load(['getLmStudioModelId'], { LMSTUDIO_MODEL: 'attendu', gmJsonRequest: async () => ({ models: [{ type: 'llm', key: 'autre', loaded_instances: [{ id: 'autre' }] }] }) });
   await assert.rejects(api.getLmStudioModelId(), /modèle configuré/);
+});
+
+test('courriers: sélectionne uniquement une instance de conversation chargée et compatible vision si nécessaire', async () => {
+  const models = [
+    { type: 'llm', key: 'telecharge', capabilities: { vision: true }, loaded_instances: [] },
+    { type: 'embedding', key: 'embedding', loaded_instances: [{ id: 'embedding' }] },
+    { type: 'llm', key: 'texte', capabilities: { vision: false }, loaded_instances: [{ id: 'texte-charge' }] },
+    { type: 'llm', key: 'vision', capabilities: { vision: true }, loaded_instances: [{ id: 'vision-charge' }] },
+  ];
+  const api = load(['getLmStudioModelId'], { gmJsonRequest: async () => ({ models }) });
+  assert.equal(await api.getLmStudioModelId(), 'texte-charge');
+  assert.equal(await api.getLmStudioModelId({ requiresVision: true }), 'vision-charge');
+  models[3].loaded_instances = [];
+  await assert.rejects(api.getLmStudioModelId({ requiresVision: true }), /aucun modèle avec vision chargé/);
+  assert.equal(api.getCache(), '');
 });
 
 test('courriers: HTTP terminated et No models loaded deviennent des erreurs bloquantes', async () => {
@@ -116,7 +131,7 @@ test('courriers: lecture réelle d’une image fictive via le transport du scrip
     },
   });
   const dataUrl = 'data:image/png;base64,' + fs.readFileSync(path.join(__dirname, 'fixtures/lmstudio-vision-synthetic.png')).toString('base64');
-  const model = await api.getLmStudioModelId();
+  const model = await api.getLmStudioModelId({ requiresVision: true });
   for (const imageCount of [1, 4, 0]) {
     const content = imageCount ? [{ type: 'text', text: 'Recopie uniquement le code de controle commun aux pages.' }, ...Array.from({ length: imageCount }, () => ({ type: 'image_url', image_url: { url: dataUrl } }))] : 'Réponds uniquement OK.';
     const response = await api.gmJsonRequest({ method: 'POST', url: 'http://localhost:1234/v1/chat/completions', headers: { 'Content-Type': 'application/json' }, data: JSON.stringify({ model, temperature: 0, max_tokens: 8192, stream: false, messages: [{ role: 'user', content }] }) });
